@@ -1,0 +1,557 @@
+Parameters:
+  SSHKey:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: KeyPair Untuk Akses Instance
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.1.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+      - Key: Name
+        Value:  !Join ['', [!Ref "AWS::StackName", "-VPC" ]]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    DependsOn: VPC
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.1.0.0/28
+      AvailabilityZone: !Select [ 0, !GetAZs ]    # Get the first AZ in the list       
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-PublicSubnet
+
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.1.1.0/28
+      AvailabilityZone: !Select [ 0, !GetAZs ]    # Get the first AZ in the list       
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-PrivateSubnet  
+
+  NATGateway:
+   Type: AWS::EC2::NatGateway
+   Properties:
+     AllocationId:
+         Fn::GetAtt:
+         - ElasticIPAddress
+         - AllocationId
+     SubnetId: !Ref PublicSubnet
+     Tags:
+     - Key: Name
+       Value: !Sub NAT-${AWS::StackName}
+  ElasticIPAddress:
+   Type: AWS::EC2::EIP
+   Properties:
+     Domain: VPC 
+
+  #CREATING 2 ROUTE TABLES
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: Public
+  PublicRoute1:   # Public route table has direct routing to IGW:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+      
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: Private        
+  PrivateRoute1:  # Private route table can access web via NAT gateway
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway     # Kalau Pake Nat Instance di Ganti InstanceId
+
+ #Attach Subnet Public and Private Subnet to Route Table
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+  PrivateSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: allow ssh,http,https
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Reverse Proxy
+
+  AllowSsh:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      CidrIp: 0.0.0.0/0
+      FromPort: 22
+      ToPort: 22
+      GroupId: !Ref SecurityGroup
+
+  Allowhttp:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      CidrIp: 0.0.0.0/0
+      FromPort: 80
+      ToPort: 80
+      GroupId: !Ref SecurityGroup
+
+  Allowhttps:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      CidrIp: 0.0.0.0/0
+      FromPort: 443
+      ToPort: 443
+      GroupId: !Ref SecurityGroup
+
+  Allownode:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      CidrIp: 10.1.1.11/32
+      FromPort: 9100
+      ToPort: 9100
+      GroupId: !Ref SecurityGroup
+
+  SecurityGroupFe:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: allow ssh,apps,nodes
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Frontend
+
+  AllowSshFe:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SecurityGroup
+      FromPort: 22
+      ToPort: 22
+      GroupId: !Ref SecurityGroupFe
+
+  AllowSshFeJenk:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SecurityGroupCicd
+      FromPort: 22
+      ToPort: 22
+      GroupId: !Ref SecurityGroupFe
+
+  AllowAppsFe:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SecurityGroup
+      FromPort: 5000
+      ToPort: 5000
+      GroupId: !Ref SecurityGroupFe
+
+  AllowNodesFe:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SecurityGroupMonitoring
+      FromPort: 9100
+      ToPort: 9100
+      GroupId: !Ref SecurityGroupFe
+
+  SecurityGroupBe:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: allow ssh,apps,nodes
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Backend
+
+  AllowSshBe:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SecurityGroup
+      FromPort: 22
+      ToPort: 22
+      GroupId: !Ref SecurityGroupBe
+
+  AllowSshBeJenk:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SecurityGroupCicd
+      FromPort: 22
+      ToPort: 22
+      GroupId: !Ref SecurityGroupBe
+
+  AllowAppsBe:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SecurityGroup
+      FromPort: 5000
+      ToPort: 5000
+      GroupId: !Ref SecurityGroupBe
+
+  AllowNodesBe:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SecurityGroupMonitoring
+      FromPort: 9100
+      ToPort: 9100
+      GroupId: !Ref SecurityGroupBe
+
+  SecurityGroupDb:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: allow ssh,apps,nodes,mysql
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Database
+
+  AllowSshDb:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SecurityGroup
+      FromPort: 22
+      ToPort: 22
+      GroupId: !Ref SecurityGroupDb
+
+  AllowAppsDb:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SecurityGroupBe
+      FromPort: 5432
+      ToPort: 5432
+      GroupId: !Ref SecurityGroupDb
+
+  AllowAppsDockerMachine:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SecurityGroupDb
+      FromPort: 2376
+      ToPort: 2376
+      GroupId: !Ref SecurityGroupDb
+
+  AllowAppsDockerNodes:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SecurityGroupDb
+      FromPort: 2377
+      ToPort: 2377
+      GroupId: !Ref SecurityGroupDb
+
+  AllowAppsDockerComNodes:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SecurityGroupDb
+      FromPort: 7946
+      ToPort: 7946
+      GroupId: !Ref SecurityGroupDb
+
+  AllowAppsDockerComNodes2:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: udp
+      SourceSecurityGroupId: !Ref SecurityGroupDb
+      FromPort: 7946
+      ToPort: 7946
+      GroupId: !Ref SecurityGroupDb
+
+  AllowAppsDockerNetwork:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: udp
+      SourceSecurityGroupId: !Ref SecurityGroupDb
+      FromPort: 4789
+      ToPort: 4789
+      GroupId: !Ref SecurityGroupDb
+
+  AllowNodesDb:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SecurityGroupMonitoring
+      FromPort: 9100
+      ToPort: 9100
+      GroupId: !Ref SecurityGroupDb
+
+  SecurityGroupCicd:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: allow ssh,apps,nodes
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Jenkins
+
+  AllowSshCicd:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SecurityGroup
+      FromPort: 22
+      ToPort: 22
+      GroupId: !Ref SecurityGroupCicd
+
+  AllowAppsCicd:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SecurityGroupCicd
+      FromPort: 8080
+      ToPort: 8080
+      GroupId: !Ref SecurityGroupCicd
+
+  AllowApps2Cicd:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SecurityGroupCicd
+      FromPort: 50000
+      ToPort: 50000
+      GroupId: !Ref SecurityGroupCicd
+
+  AllowNodesCicd:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SecurityGroupMonitoring
+      FromPort: 9100
+      ToPort: 9100
+      GroupId: !Ref SecurityGroupCicd
+
+  SecurityGroupMonitoring:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: allow ssh,apps,nodes
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Monitoring
+
+  AllowSshMonitoring:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SecurityGroup
+      FromPort: 22
+      ToPort: 22
+      GroupId: !Ref SecurityGroupMonitoring
+
+  AllowAppsMonitoring:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SecurityGroupMonitoring
+      FromPort: 3000
+      ToPort: 3000
+      GroupId: !Ref SecurityGroupMonitoring
+
+  AllowApps2Monitoring:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SecurityGroupMonitoring
+      FromPort: 9090
+      ToPort: 9090
+      GroupId: !Ref SecurityGroupMonitoring
+
+  AllowNodesMonitoring:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SecurityGroupMonitoring
+      FromPort: 9100
+      ToPort: 9100
+      GroupId: !Ref SecurityGroupMonitoring
+
+  # NATInstance:
+  #   Type: AWS::EC2::Instance
+  #   Properties:
+  #     AvailabilityZone: us-east-1a
+  #     # SourceDestCheck: false 
+  #     SubnetId: !Ref PublicSubnet
+  #     ImageId: ami-00a9d4a05375b2763
+  #     InstanceType: t2.micro
+  #     KeyName: !Ref SSHKey
+  #     Tags:
+  #     - Key: Name
+  #       Value: 00-NAT-Instance
+
+  # NATEIP:
+  #   Type: AWS::EC2::EIP
+  #   Properties:
+  #     InstanceId: !Ref NATInstance
+
+  MyInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      AvailabilityZone: us-east-1a
+      SubnetId: !Ref PublicSubnet
+      ImageId: ami-00ddb0e5626798373
+      InstanceType: t2.micro
+      KeyName: !Ref SSHKey
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      Tags:
+      - Key: Name
+        Value: 01-Reverse Proxy
+
+  MyEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref MyInstance
+
+  FrontendInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      AvailabilityZone: us-east-1a
+      SubnetId: !Ref PrivateSubnet
+      ImageId: ami-00ddb0e5626798373
+      InstanceType: t2.medium
+      SecurityGroupIds: 
+        - !Ref SecurityGroupFe
+      KeyName: !Ref SSHKey
+      Tags:
+      - Key: Name
+        Value: 02-Frontend01
+
+  Frontend2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      AvailabilityZone: us-east-1a
+      SubnetId: !Ref PrivateSubnet
+      ImageId: ami-00ddb0e5626798373
+      InstanceType: t2.medium
+      SecurityGroupIds: 
+        - !Ref SecurityGroupFe
+      KeyName: !Ref SSHKey
+      Tags:
+      - Key: Name
+        Value: 02-Frontend02
+
+  BackendInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      AvailabilityZone: us-east-1a
+      SubnetId: !Ref PrivateSubnet
+      ImageId: ami-00ddb0e5626798373
+      InstanceType: t2.micro
+      SecurityGroupIds: 
+        - !Ref SecurityGroupBe
+      KeyName: !Ref SSHKey
+      Tags:
+      - Key: Name
+        Value: 03-Backend01
+
+  Backend2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      AvailabilityZone: us-east-1a
+      SubnetId: !Ref PrivateSubnet
+      ImageId: ami-00ddb0e5626798373
+      InstanceType: t2.micro
+      SecurityGroupIds: 
+        - !Ref SecurityGroupBe
+      KeyName: !Ref SSHKey
+      Tags:
+      - Key: Name
+        Value: 03-Backend02
+
+  DatabaseInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      AvailabilityZone: us-east-1a
+      SubnetId: !Ref PrivateSubnet
+      ImageId: ami-00ddb0e5626798373
+      InstanceType: t2.micro
+      SecurityGroupIds: 
+        - !Ref SecurityGroupDb
+      KeyName: !Ref SSHKey
+      Tags:
+      - Key: Name
+        Value: 04-Database01
+
+  Database2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      AvailabilityZone: us-east-1a
+      SubnetId: !Ref PrivateSubnet
+      ImageId: ami-00ddb0e5626798373
+      InstanceType: t2.micro
+      SecurityGroupIds: 
+        - !Ref SecurityGroupDb
+      KeyName: !Ref SSHKey
+      Tags:
+      - Key: Name
+        Value: 04-Database02
+
+  CICDInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      AvailabilityZone: us-east-1a
+      SubnetId: !Ref PrivateSubnet
+      ImageId: ami-00ddb0e5626798373
+      InstanceType: t2.micro
+      SecurityGroupIds: 
+        - !Ref SecurityGroupCicd
+      KeyName: !Ref SSHKey
+      Tags:
+      - Key: Name
+        Value: 05-Cicd
+
+  MonitoringInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      AvailabilityZone: us-east-1a
+      SubnetId: !Ref PrivateSubnet
+      ImageId: ami-00ddb0e5626798373
+      InstanceType: t2.micro
+      SecurityGroupIds: 
+        - !Ref SecurityGroupMonitoring
+      KeyName: !Ref SSHKey
+      Tags:
+      - Key: Name
+        Value: 06-Monitoring
